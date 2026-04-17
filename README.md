@@ -50,7 +50,7 @@ Authorization: Bearer <api_key>
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `model` | string | ✅ | Model name (e.g., "QVox") |
+| `model` | string | ✅ | Must be `"QVox"` (case-sensitive). Invalid model returns 400. |
 | `file` | file | ❌ | Audio file (max 500MB) |
 | `url` | string | ❌ | Audio URL (YouTube supported) |
 | `lang` | string | ❌ | Language code (see below) |
@@ -61,6 +61,12 @@ Authorization: Bearer <api_key>
 ```
 as, bn, brx, doi, gu, hi, kn, kok, ks, mai, ml, mni, mr, ne, or, pa, sa, sat, sd, ta, te, ur
 ```
+
+- `lang` not provided → Canary ASR (English) **+ Speaker Diarization** (parallel)
+- `lang` provided + supported → Indic ASR only (no diarization — Indic ASR does not return segments)
+
+> **Note:** When `lang` is provided, `segments` will be an empty array because Indic ASR only returns full text, not per-speaker segments.
+
 **Supported Audio Formats:**
 ```
 WAV, MP3, FLAC, OGG, WebM, M4A, AAC, OPUS
@@ -82,11 +88,14 @@ WAV, MP3, FLAC, OGG, WebM, M4A, AAC, OPUS
 }
 ```
 
+> **`segments` behavior:** Only populated when `lang` is **not** provided (Canary ASR + Diarization). When `lang` is provided (Indic ASR), `segments` is an empty array `[]`.
+
 **Errors:**
 
 | Status | Cause |
 |--------|-------|
 | 400 | No file or URL provided |
+| 400 | Invalid model name (must be "QVox") |
 | 400 | Unsupported language |
 | 400 | YouTube download failed |
 | 401 | Missing Authorization header |
@@ -96,8 +105,17 @@ WAV, MP3, FLAC, OGG, WebM, M4A, AAC, OPUS
 
 **Logs (production):**
 ```
-File saved: /tmp/xxxxx.mp3
-Starting pipeline
+[HH:MM:SS] YouTube download started: https://youtube.com/...
+[HH:MM:SS] Downloading:  10.0% @  xx.xxMiB/s
+[HH:MM:SS] Downloading:  20.0% @  xx.xxMiB/s
+...
+[HH:MM:SS] Download finished, processing with FFmpeg...
+[HH:MM:SS] YouTube downloaded: ... -> /tmp/xxxxx.mp3
+[HH:MM:SS] File saved: /tmp/xxxxx.mp3
+[HH:MM:SS] Starting pipeline
+[HH:MM:SS] Calling Indic ASR: ... (lang=bn)   # if lang provided
+[HH:MM:SS] Calling Canary ASR: ...            # if no lang
+[HH:MM:SS] Calling Diarization: ...            # if no lang
 Pipeline finished, Segments: XX
 POST /v1/transcribe 200 OK
 ```
@@ -515,6 +533,19 @@ curl -X POST http://localhost:8000/v1/transcribe \
   -F "file=@audio.wav" \
   -F "lang=hi"
 ```
+
+---
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `RT_ASR_URL` | Canary batch ASR URL | `http://localhost:9005/transcribe` |
+| `INDIC_ASR_URL` | Indic languages ASR URL | `http://localhost:9002/realtime` |
+| `DIARIZATION_URL` | Speaker diarization URL | `http://localhost:9003/diarize` |
+| `API_KEYS` | Comma-separated API keys | - |
+| `MODEL_NAME` | Valid model name (must be "QVox") | `QVox` |
+
 ---
 
 ## Docker Deployment
