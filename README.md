@@ -61,10 +61,6 @@ Authorization: Bearer <api_key>
 ```
 as, bn, brx, doi, gu, hi, kn, kok, ks, mai, ml, mni, mr, ne, or, pa, sa, sat, sd, ta, te, ur
 ```
-
-- `lang` not provided → Canary ASR (English)
-- `lang` provided + supported → Indic ASR
-
 **Supported Audio Formats:**
 ```
 WAV, MP3, FLAC, OGG, WebM, M4A, AAC, OPUS
@@ -519,19 +515,6 @@ curl -X POST http://localhost:8000/v1/transcribe \
   -F "file=@audio.wav" \
   -F "lang=hi"
 ```
-
----
-
-## Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `RT_ASR_URL` | Canary batch ASR URL | `http://localhost:9005/transcribe` |
-| `INDIC_ASR_URL` | Indic languages ASR URL | `http://localhost:9002/realtime` |
-| `DIARIZATION_URL` | Speaker diarization URL | `http://localhost:9003/diarize` |
-| `API_KEYS` | Comma-separated API keys | - |
-| `MODEL_NAME` | Valid model name | `QVox` |
-
 ---
 
 ## Docker Deployment
