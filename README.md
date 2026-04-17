@@ -51,10 +51,6 @@ Content-Type: multipart/form-data
 ```
 as, bn, brx, doi, gu, hi, kn, kok, ks, mai, ml, mni, mr, ne, or, pa, sa, sat, sd, ta, te, ur
 ```
-
-- `lang` not provided → routes to Canary ASR (English)
-- `lang` provided + supported → routes to Indic ASR
-
 ### Supported Audio Formats
 
 ```
@@ -413,15 +409,3 @@ Response:
 ```json
 { "Status": "QVox--Running....." }
 ```
-
----
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `RT_ASR_URL` | Canary batch ASR URL |
-| `INDIC_ASR_URL` | Indic languages ASR URL |
-| `DIARIZATION_URL` | Speaker diarization URL |
-| `API_KEYS` | Comma-separated API keys |
-| `EXPECTED_MODEL` | Valid model name |
