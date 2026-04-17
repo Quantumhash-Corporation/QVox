@@ -11,54 +11,66 @@ Local:       http://localhost:8000
 
 ## Authentication
 
-All endpoints require:
+All endpoints require API key authentication:
 
+### Batch Transcription (`POST /v1/transcribe`)
 ```
 Authorization: Bearer <api_key>
+```
+
+### Streaming (`WS /v1/stream`)
+```
+ws://host/v1/stream?api_key=<api_key>
 ```
 
 ---
 
 ## Endpoints Overview
 
-| Method | Endpoint | Purpose | Latency |
-|--------|----------|---------|---------|
-| `POST` | `/v1/transcribe` | Batch transcription | ~2-5s |
-| `WS` | `/v1/stream` | Real-time streaming | ~150-300ms |
+| Method | Endpoint | Auth | Purpose | Latency |
+|--------|----------|------|---------|---------|
+| `POST` | `/v1/transcribe` | ✅ Bearer header | Batch transcription | ~2-5s |
+| `WS` | `/v1/stream` | ✅ Query param | Real-time streaming | ~150-300ms |
+| `GET` | `/` | ❌ | Health check | <10ms |
 
 ---
 
-## Batch Transcription
+## POST /v1/transcribe
 
+Batch transcription with speaker diarization.
+
+**Request:**
 ```
 POST /v1/transcribe
 Content-Type: multipart/form-data
+Authorization: Bearer <api_key>
 ```
 
-### Parameters
+**Parameters:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `model` | string | ✅ | Model name (e.g., "QVox") |
 | `file` | file | ❌ | Audio file (max 500MB) |
-| `url` | string | ❌ | Audio URL |
+| `url` | string | ❌ | Audio URL (YouTube supported) |
 | `lang` | string | ❌ | Language code (see below) |
 
 > Provide `file` **OR** `url`, not both.
 
-### Supported Languages
-
+**Supported Languages:**
 ```
 as, bn, brx, doi, gu, hi, kn, kok, ks, mai, ml, mni, mr, ne, or, pa, sa, sat, sd, ta, te, ur
 ```
-### Supported Audio Formats
 
+- `lang` not provided → Canary ASR (English)
+- `lang` provided + supported → Indic ASR
+
+**Supported Audio Formats:**
 ```
 WAV, MP3, FLAC, OGG, WebM, M4A, AAC, OPUS
 ```
 
-### Response
-
+**Response:**
 ```json
 {
   "model": "QVox",
@@ -74,78 +86,62 @@ WAV, MP3, FLAC, OGG, WebM, M4A, AAC, OPUS
 }
 ```
 
-### Errors
+**Errors:**
 
 | Status | Cause |
 |--------|-------|
-| 400 | No file or URL |
+| 400 | No file or URL provided |
 | 400 | Unsupported language |
 | 400 | YouTube download failed |
-| 401 | Invalid API key |
-| 413 | File > 500MB |
+| 401 | Missing Authorization header |
+| 403 | Invalid API key |
+| 413 | File exceeds 500MB |
 | 500 | ASR service error |
 
-### Examples
-
-```bash
-# File upload
-curl -X POST https://api.education1.uk/v1/transcribe \
-  -H "Authorization: Bearer <key>" \
-  -F "model=QVox" \
-  -F "file=@audio.wav"
-
-# URL input
-curl -X POST https://api.education1.uk/v1/transcribe \
-  -H "Authorization: Bearer <key>" \
-  -F "model=QVox" \
-  -F "url=https://example.com/audio.mp3"
-
-# With language hint
-curl -X POST https://api.education1.uk/v1/transcribe \
-  -H "Authorization: Bearer <key>" \
-  -F "model=QVox" \
-  -F "file=@audio.wav" \
-  -F "lang=hi"
+**Logs (production):**
+```
+File saved: /tmp/xxxxx.mp3
+Starting pipeline
+Pipeline finished, Segments: XX
+POST /v1/transcribe 200 OK
 ```
 
 ---
 
-## Streaming Transcription
+## WS /v1/stream
 
-Real-time audio streaming via WebSocket. For conversational AI applications.
+Real-time streaming transcription via WebSocket.
 
+**Connection:**
 ```
-WS /v1/stream
-ws://localhost:8000/v1/stream
+ws://host/v1/stream?api_key=<api_key>
 ```
 
 ### Protocol
 
-**Client → Server**
-
+**Client → Server:**
 | Message | Description |
 |---------|-------------|
-| Binary frame | Raw audio bytes |
+| Binary audio | Raw audio bytes (any format) |
 | `{"type":"end"}` | End session |
 
-**Server → Client**
-
+**Server → Client:**
 | Message | Description |
 |---------|-------------|
-| `{"type":"ready"}` | Connection established |
-| `{"type":"transcript","text":"..."}` | Transcription result |
-| `{"type":"done"}` | Session complete |
-| `{"type":"error","message":"..."}` | Error occurred |
+| `{"type": "ready"}` | Connection established, auth passed |
+| `{"type": "transcript", "text": "..."}` | Transcription result |
+| `{"type": "done"}` | Session complete |
+| `{"type": "error", "message": "..."}` | Error occurred |
 
-### Audio Formats
+### Audio Format Detection (Magic Bytes)
 
-| Format | Supported | Notes |
-|--------|-----------|-------|
-| WebM/Opus | ✅ | Browser MediaRecorder default |
-| WAV | ✅ | RIFF header required |
-| MP3 | ✅ | |
-| FLAC | ✅ | |
-| Raw PCM | ❌ | Requires WAV header |
+| Format | Magic Bytes | Notes |
+|--------|-------------|-------|
+| WAV | `RIFF....WAVE` | |
+| MP3 | `ID3` or `\xff\xfb` | Sync word |
+| WebM | `\x1aE\xdf\xa3` | Browser default |
+| FLAC | `fLaC` | |
+| OGG | `OggS` | |
 
 ### Recommended Chunk Size
 
@@ -153,22 +149,41 @@ ws://localhost:8000/v1/stream
 2-3 seconds of audio per chunk
 ```
 
-Smaller chunks = lower latency but higher API calls.
-Larger chunks = better accuracy but higher latency.
+Smaller chunks = lower latency
+Larger chunks = better accuracy
 
 ---
 
 ## Client Examples
 
-### Python
+### Python — Batch Transcription
+
+```python
+import requests
+
+url = "http://localhost:8000/v1/transcribe"
+headers = {"Authorization": "Bearer <api_key>"}
+
+# File upload
+with open("audio.wav", "rb") as f:
+    response = requests.post(url, headers=headers, files={"file": f}, data={"model": "QVox"})
+
+print(response.json())
+
+# With language hint (Hindi)
+with open("audio.wav", "rb") as f:
+    response = requests.post(url, headers=headers, files={"file": f}, data={"model": "QVox", "lang": "hi"})
+```
+
+### Python — Streaming
 
 ```python
 import asyncio
 import websockets
 import json
 
-async def stream_transcribe(audio_path: str):
-    uri = "ws://localhost:8000/v1/stream"
+async def stream_transcribe(audio_path: str, api_key: str):
+    uri = f"ws://localhost:8000/v1/stream?api_key={api_key}"
 
     async with websockets.connect(uri, ping_timeout=None) as ws:
         await ws.recv()  # {"type":"ready"}
@@ -178,14 +193,12 @@ async def stream_transcribe(audio_path: str):
 
         result = await ws.recv()
         data = json.loads(result)
-
-        if data["type"] == "transcript":
-            print(f"Text: {data['text']}")
+        print(f"Transcript: {data['text']}")
 
         await ws.send(json.dumps({"type": "end"}))
         await ws.recv()  # {"type":"done"}
 
-asyncio.run(stream_transcribe("audio.wav"))
+asyncio.run(stream_transcribe("audio.wav", "<api_key>"))
 ```
 
 ### Python — Real-time Microphone
@@ -196,23 +209,23 @@ import websockets
 import json
 import pyaudio
 
-async def stream_mic(duration=10):
+async def stream_mic(duration: int, api_key: str):
     CHUNK = 1024
     FORMAT = pyaudio.paInt16
     CHANNELS = 1
     RATE = 16000
 
-    uri = "ws://localhost:8000/v1/stream"
+    uri = f"ws://localhost:8000/v1/stream?api_key={api_key}"
 
     async with websockets.connect(uri, ping_timeout=None) as ws:
-        await ws.recv()  # ready
+        await ws.recv()
 
         p = pyaudio.PyAudio()
         stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True)
 
         for _ in range(int(RATE / CHUNK * duration)):
             data = stream.read(CHUNK, exception_on_overflow=False)
-            ws.send(data)
+            await ws.send(data)
 
         stream.stop_stream()
         p.terminate()
@@ -220,16 +233,55 @@ async def stream_mic(duration=10):
         await ws.send(json.dumps({"type": "end"}))
         await ws.recv()
 
-asyncio.run(stream_mic())
+asyncio.run(stream_mic(10, "<api_key>"))
 ```
 
-### Node.js
+### Node.js — Batch Transcription
+
+```javascript
+const FormData = require('form-data');
+const fs = require('fs');
+const axios = require('axios');
+
+const apiKey = '<api_key>';
+const url = 'http://localhost:8000/v1/transcribe';
+
+// File upload
+const form = new FormData();
+form.append('model', 'QVox');
+form.append('file', fs.createReadStream('audio.wav'));
+
+const response = await axios.post(url, form, {
+    headers: {
+        ...form.getHeaders(),
+        'Authorization': `Bearer ${apiKey}`
+    }
+});
+
+console.log(response.data);
+
+// With language hint (Hindi)
+const formHi = new FormData();
+formHi.append('model', 'QVox');
+formHi.append('file', fs.createReadStream('audio.wav'));
+formHi.append('lang', 'hi');
+
+const resHi = await axios.post(url, formHi, {
+    headers: {
+        ...formHi.getHeaders(),
+        'Authorization': `Bearer ${apiKey}`
+    }
+});
+```
+
+### Node.js — Streaming
 
 ```javascript
 const WebSocket = require('ws');
 const fs = require('fs');
 
-const ws = new WebSocket('ws://localhost:8000/v1/stream');
+const apiKey = '<api_key>';
+const ws = new WebSocket(`ws://localhost:8000/v1/stream?api_key=${apiKey}`);
 
 ws.on('open', () => {
     const audio = fs.readFileSync('audio.wav');
@@ -254,7 +306,8 @@ ws.on('message', (data) => {
 const WebSocket = require('ws');
 const { MicrophoneStream } = require('microphone-stream');
 
-const ws = new WebSocket('ws://localhost:8000/v1/stream');
+const apiKey = '<api_key>';
+const ws = new WebSocket(`ws://localhost:8000/v1/stream?api_key=${apiKey}`);
 
 ws.on('open', async () => {
     const mic = new MicrophoneStream();
@@ -277,7 +330,33 @@ ws.on('message', (data) => {
 });
 ```
 
-### React.js — Browser MediaRecorder
+### React.js — Batch Transcription
+
+```jsx
+import axios from 'axios';
+
+const apiKey = '<api_key>';
+const url = 'http://localhost:8000/v1/transcribe';
+
+async function transcribeFile(file, lang = null) {
+    const formData = new FormData();
+    formData.append('model', 'QVox');
+    formData.append('file', file);
+    if (lang) formData.append('lang', lang);
+
+    const response = await axios.post(url, formData, {
+        headers: { 'Authorization': `Bearer ${apiKey}` }
+    });
+
+    return response.data;
+}
+
+// Usage
+const result = await transcribeFile(audioFile);      // English
+const resultHi = await transcribeFile(audioFile, 'hi'); // Hindi
+```
+
+### React.js — Browser Streaming
 
 ```jsx
 import { useState, useRef } from 'react';
@@ -286,6 +365,7 @@ function AudioTranscriber() {
   const [transcript, setTranscript] = useState('');
   const wsRef = useRef(null);
   const recorderRef = useRef(null);
+  const apiKey = '<api_key>';
 
   const startRecording = async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -299,15 +379,14 @@ function AudioTranscriber() {
       }
     };
 
-    recorder.start(1000);  // chunk every 1s
+    recorder.start(1000);
     recorderRef.current = recorder;
 
-    // Connect WebSocket
-    const ws = new WebSocket('ws://localhost:8000/v1/stream');
+    const ws = new WebSocket(`ws://localhost:8000/v1/stream?api_key=${apiKey}`);
     ws.onmessage = (e) => {
       const data = JSON.parse(e.data);
       if (data.type === 'transcript') {
-        setTranscript(data.text);
+        setTranscript(prev => prev + ' ' + data.text);
       }
     };
     wsRef.current = ws;
@@ -328,7 +407,28 @@ function AudioTranscriber() {
 }
 ```
 
-### Next.js — Socket.IO Proxy
+### Next.js — Batch Transcription (API Route)
+
+```typescript
+// app/api/transcribe/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+
+export async function POST(request: NextRequest) {
+    const apiKey = process.env.QVOX_API_KEY;
+    const formData = await request.formData();
+    formData.append('model', 'QVox');
+
+    const response = await fetch('http://localhost:8000/v1/transcribe', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+        body: formData
+    });
+
+    return NextResponse.json(await response.json());
+}
+```
+
+### Next.js — Streaming with Socket.IO
 
 **Server (server.js):**
 
@@ -347,7 +447,8 @@ app.prepare().then(() => {
 
   io.on('connection', (socket) => {
     const WebSocket = require('ws');
-    const qvoxWs = new WebSocket('ws://localhost:8000/v1/stream');
+    const apiKey = process.env.QVOX_API_KEY;
+    const qvoxWs = new WebSocket(`ws://localhost:8000/v1/stream?api_key=${apiKey}`);
 
     qvoxWs.on('message', (data) => socket.emit('transcript', data.toString()));
 
@@ -396,16 +497,61 @@ export default function Home() {
 }
 ```
 
+### cURL
+
+```bash
+# Batch file upload
+curl -X POST http://localhost:8000/v1/transcribe \
+  -H "Authorization: Bearer <api_key>" \
+  -F "model=QVox" \
+  -F "file=@audio.wav"
+
+# Batch with URL
+curl -X POST http://localhost:8000/v1/transcribe \
+  -H "Authorization: Bearer <api_key>" \
+  -F "model=QVox" \
+  -F "url=https://example.com/audio.mp3"
+
+# Batch with language (Hindi)
+curl -X POST http://localhost:8000/v1/transcribe \
+  -H "Authorization: Bearer <api_key>" \
+  -F "model=QVox" \
+  -F "file=@audio.wav" \
+  -F "lang=hi"
+```
+
 ---
 
-## Health Check
+## Environment Variables
 
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `RT_ASR_URL` | Canary batch ASR URL | `http://localhost:9005/transcribe` |
+| `INDIC_ASR_URL` | Indic languages ASR URL | `http://localhost:9002/realtime` |
+| `DIARIZATION_URL` | Speaker diarization URL | `http://localhost:9003/diarize` |
+| `API_KEYS` | Comma-separated API keys | - |
+| `MODEL_NAME` | Valid model name | `QVox` |
+
+---
+
+## Docker Deployment
+
+```bash
+# Build
+docker compose build
+
+# Run
+docker compose up -d
+
+# Logs
+docker compose logs -f
+
+# Shell into container
+docker compose exec qvox sh
 ```
-GET /
-```
 
-Response:
-
-```json
-{ "Status": "QVox--Running....." }
+**Health check:**
+```bash
+curl http://localhost:8000/
+# Response: {"Status":"QVox--Running....."}
 ```
