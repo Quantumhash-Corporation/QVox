@@ -88,7 +88,7 @@ export function connect(apiKey) {
   if (ws && ws.readyState === WebSocket.OPEN) return;
 
   // Configure your backend URL here
-  const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:9576';
+  const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:port';
   const wsUrl = `${WS_URL}/v1/stream?api_key=${apiKey}`;
   
   ws = new WebSocket(wsUrl);
@@ -462,7 +462,6 @@ as, bn, brx, doi, gu, hi, kn, kok, ks, mai, ml, mni, mr, ne, or, pa, sa, sat, sd
 **"WebSocket connection failed"**
 - Check if API key is valid
 - Verify network allows WebSocket connections
-- For local dev, ensure QVox server is running on port 8000
 
 **"Invalid or missing API key"**
 - API key not provided in query param
