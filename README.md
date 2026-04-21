@@ -1,206 +1,414 @@
-# QVox API Reference
+# QVox Client Integration Guide
 
-## Base URL
+This guide focuses on **client-side integration** with QVox API. For server details, see the architecture section.
 
-```
-Production:  https://api.education1.uk
-Local:       http://localhost:8000
-```
+## Quick Reference
+
+| Environment | Base URL | WebSocket |
+|-------------|----------|-----------|
+| **Production** | `https://api.education1.uk` | `wss://api.education1.uk/v1/stream` |
+| **Local** | `http://localhost:8000` | `ws://localhost:8000/v1/stream` |
 
 ---
 
 ## Authentication
 
-All endpoints require API key authentication:
-
-### Batch Transcription (`POST /v1/transcribe`)
+### Batch API (HTTP)
 ```
 Authorization: Bearer <api_key>
 ```
 
-### Streaming (`WS /v1/stream`)
+### Streaming API (WebSocket)
 ```
 wss://api.education1.uk/v1/stream?api_key=<api_key>
 ```
 
 ---
 
-## Endpoints Overview
+## Streaming Protocol
 
-| Method | Endpoint | Auth | Purpose | Latency |
-|--------|----------|------|---------|---------|
-| `POST` | `/v1/transcribe` | ✅ Bearer header | Batch transcription | ~2-5s |
-| `WS` | `/v1/stream` | ✅ Query param | Real-time chunk-by-chunk streaming | ~100-500ms per chunk |
-| `GET` | `/` | ❌ | Health check | <10ms |
+The WebSocket protocol for streaming transcription:
 
----
-
-## POST /v1/transcribe
-
-Batch transcription with speaker diarization.
-
-**Request:**
-```
-POST /v1/transcribe
-Content-Type: multipart/form-data
-Authorization: Bearer <api_key>
-```
-
-**Parameters:**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `model` | string | ✅ | Must be `"QVox"` (case-sensitive). Invalid model returns 400. |
-| `file` | file | ❌ | Audio file (max 500MB) |
-| `url` | string | ❌ | Audio URL (YouTube supported) |
-| `lang` | string | ❌ | Language code (see below) |
-
-> Provide `file` **OR** `url`, not both.
-
-**Supported Languages:**
-```
-as, bn, brx, doi, gu, hi, kn, kok, ks, mai, ml, mni, mr, ne, or, pa, sa, sat, sd, ta, te, ur
-```
-
-- `lang` not provided → Canary ASR (English) **+ Speaker Diarization** (parallel)
-- `lang` provided + supported → Indic ASR only (no diarization — Indic ASR does not return segments)
-
-> **Note:** When `lang` is provided, `segments` will be an empty array because Indic ASR only returns full text, not per-speaker segments.
-
-**Supported Audio Formats (Batch):**
-```
-WAV, MP3, FLAC, OGG, WebM, M4A, AAC, OPUS
-```
-
-**Response:**
-```json
-{
-  "model": "QVox",
-  "text": "Full transcription text...",
-  "segments": [
-    {
-      "speaker": "speaker_0",
-      "start": 0.5,
-      "end": 2.3,
-      "text": "Hello world"
-    }
-  ]
-}
-```
-
-> **`segments` behavior:** Only populated when `lang` is **not** provided (Canary ASR + Diarization). When `lang` is provided (Indic ASR), `segments` is an empty array `[]`.
-
-**Errors:**
-
-| Status | Cause |
-|--------|-------|
-| 400 | No file or URL provided |
-| 400 | Invalid model name (must be "QVox") |
-| 400 | Unsupported language |
-| 400 | YouTube download failed |
-| 401 | Missing Authorization header |
-| 403 | Invalid API key |
-| 413 | File exceeds 500MB |
-| 500 | ASR service error |
-
-**Logs (production):**
-```
-[HH:MM:SS] YouTube download started: https://youtube.com/...
-[HH:MM:SS] Downloading:  10.0% @  xx.xxMiB/s
-[HH:MM:SS] Downloading:  20.0% @  xx.xxMiB/s
-...
-[HH:MM:SS] Download finished, processing with FFmpeg...
-[HH:MM:SS] YouTube downloaded: ... -> /tmp/xxxxx.mp3
-[HH:MM:SS] File saved: /tmp/xxxxx.mp3
-[HH:MM:SS] Starting pipeline
-[HH:MM:SS] Calling Indic ASR: ... (lang=bn)   # if lang provided
-[HH:MM:SS] Calling Canary ASR: ...            # if no lang
-[HH:MM:SS] Calling Diarization: ...            # if no lang
-Pipeline finished, Segments: XX
-POST /v1/transcribe 200 OK
-```
-
----
-
-## WS /v1/stream
-
-Real-time **chunk-by-chunk** streaming transcription via WebSocket.
-
-**Connection:**
-```
-ws://host/v1/stream?api_key=<api_key>
-```
-
-### Protocol
-
-**Client → Server:**
+### Client → Server
 | Message | Description |
 |---------|-------------|
-| Binary audio (WAV or PCM) | Raw audio bytes per chunk |
+| Binary audio (16kHz WAV/PCM) | Raw audio bytes per chunk |
 | `{"type":"end"}` | End session |
 
-**Server → Client:**
+### Server → Client
 | Message | Description |
 |---------|-------------|
-| `{"type": "ready"}` | Connection established, auth passed |
-| `{"type": "transcript", "text": "..."}` | Transcription result for chunk |
+| `{"type": "ready"}` | Connection established |
+| `{"type": "transcript", "text": "..."}` | Transcription result |
 | `{"type": "done"}` | Session complete |
 | `{"type": "error", "message": "..."}` | Error occurred |
 
-### Supported Streaming Formats
-
-> **IMPORTANT:** Streaming endpoint only supports **WAV** and **raw PCM** formats for real-time chunk-by-chunk processing.
-
-| Format | Magic Bytes | Processing | Streaming |
-|--------|-------------|------------|----------|
-| WAV | `RIFF....WAVE` | Header stripped → int16 | ✅ Supported |
-| Raw PCM | None | Direct int16→float32 | ✅ Supported |
-| MP3 | `ID3`, `0xFF FB/F3/F2/FA` | librosa decode | ❌ Use /transcribe |
-| WebM | `EBML` header | FFmpeg decode | ❌ Use /transcribe |
-| OGG | `OggS` | librosa decode | ❌ Use /transcribe |
-| FLAC | `fLaC` | librosa decode | ❌ Use /transcribe |
-
-> **For MP3, WebM, OGG, FLAC audio:** Use the `/v1/transcribe` batch endpoint instead.
-
-### Chunk Size Recommendations
-
-```
-2-3 seconds of audio per chunk (16kHz, 16-bit mono)
-= 32,000 to 48,000 bytes per chunk
-```
-
-- Smaller chunks = lower latency per response
-- Larger chunks = better accuracy per chunk
-- Recommended: 32KB-48KB per chunk for optimal balance
-
 ### Audio Requirements
-
 | Property | Value |
 |----------|-------|
 | Sample Rate | 16,000 Hz |
 | Bit Depth | 16-bit |
 | Channels | 1 (mono) |
-| Encoding | PCM (signed integer) or WAV |
+| Encoding | PCM (signed int16) or WAV |
 
-### Example Flow
-
+### Chunk Size
 ```
-Client sends chunk1 (32KB WAV)  →  Server processes  →  {"type":"transcript","text":"Hello"}
-Client sends chunk2 (32KB WAV)  →  Server processes  →  {"type":"transcript","text":"world"}
-Client sends {"type":"end"}     →  Server sends     →  {"type":"done"}
+Recommended: 32KB-48KB per chunk (~2-3 seconds of audio)
+Smaller = lower latency, Larger = better accuracy per chunk
 ```
 
 ---
 
-## Client Examples
+## Client Implementations
 
-### Python — Batch Transcription
+### Browser - WebSocket Streaming
+
+The most common use case: **browser microphone streaming**.
+
+```javascript
+// stream.js - WebSocket service for QVox streaming
+
+let ws = null;
+const callbacks = {
+  onOpen: null,
+  onClose: null,
+  onError: null,
+  onTranscript: null,
+  onDone: null,
+};
+
+export function initStreamService(config) {
+  if (config.onOpen) callbacks.onOpen = config.onOpen;
+  if (config.onClose) callbacks.onClose = config.onClose;
+  if (config.onError) callbacks.onError = config.onError;
+  if (config.onTranscript) callbacks.onTranscript = config.onTranscript;
+  if (config.onDone) callbacks.onDone = config.onDone;
+}
+
+export function connect(apiKey) {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+
+  // Configure your backend URL here
+  const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:9576';
+  const wsUrl = `${WS_URL}/v1/stream?api_key=${apiKey}`;
+  
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
+    callbacks.onOpen?.();
+  };
+
+  ws.onclose = () => {
+    callbacks.onClose?.();
+  };
+
+  ws.onerror = (error) => {
+    callbacks.onError?.(new Error("WebSocket error"));
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      
+      switch (msg.type) {
+        case 'transcript':
+          callbacks.onTranscript?.(msg.text, msg);
+          break;
+        case 'done':
+          callbacks.onDone?.();
+          ws.close();
+          break;
+        case 'error':
+          callbacks.onError?.(new Error(msg.message));
+          break;
+      }
+    } catch (err) {
+      console.error('Failed to parse message:', err);
+    }
+  };
+}
+
+export function sendAudioChunk(chunk) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(chunk);
+    return true;
+  }
+  return false;
+}
+
+export function disconnect() {
+  if (ws) {
+    ws.send(JSON.stringify({ type: 'end' }));
+    ws.close();
+    ws = null;
+  }
+}
+
+export function isConnected() {
+  return ws && ws.readyState === WebSocket.OPEN;
+}
+```
+
+### Browser - MediaRecorder Streaming
+
+```javascript
+// Start recording with microphone
+const stream = await navigator.mediaDevices.getUserMedia({
+  audio: {
+    deviceId: selectedDevice !== 'default' ? { exact: selectedDevice } : undefined,
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  }
+});
+
+// Create MediaRecorder (WebM format)
+const mediaRecorder = new MediaRecorder(stream, {
+  mimeType: 'audio/webm;codecs=opus'
+});
+
+const audioChunks = [];
+
+mediaRecorder.ondataavailable = (e) => {
+  if (e.data.size > 0) {
+    audioChunks.push(e.data);
+    sendAudioChunk(e.data);  // Send to WebSocket
+  }
+};
+
+mediaRecorder.start(1000);  // Collect chunks every 1 second
+
+// Stop recording
+mediaRecorder.stop();
+stream.getTracks().forEach(track => track.stop());
+disconnect();  // Send end signal
+```
+
+### React.js - Live Stream Component
+
+```jsx
+import { useState, useRef, useEffect } from 'react';
+import { connect, disconnect, sendAudioChunk, initStreamService, isConnected } from './stream';
+
+export default function LiveStream() {
+  const [transcript, setTranscript] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const streamRef = useRef(null);
+
+  useEffect(() => {
+    // Initialize stream callbacks
+    initStreamService({
+      onOpen: () => console.log('Connected'),
+      onClose: () => setIsRecording(false),
+      onTranscript: (text) => {
+        setTranscript(prev => prev + ' ' + text);
+      },
+      onDone: () => console.log('Stream ended'),
+      onError: (err) => console.error('Error:', err),
+    });
+
+    return () => disconnect();
+  }, []);
+
+  const startRecording = async () => {
+    // Connect to WebSocket first
+    connect(apiKey);
+    
+    // Wait for connection
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    if (!isConnected()) {
+      console.error('Failed to connect');
+      return;
+    }
+
+    // Get microphone
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    streamRef.current = stream;
+
+    // Create MediaRecorder
+    const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+    
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) {
+        sendAudioChunk(e.data);
+      }
+    };
+
+    recorder.start(1000);
+    mediaRecorderRef.current = recorder;
+    setIsRecording(true);
+  };
+
+  const stopRecording = () => {
+    mediaRecorderRef.current?.stop();
+    streamRef.current?.getTracks().forEach(track => track.stop());
+    disconnect();
+    setIsRecording(false);
+  };
+
+  return (
+    <div>
+      <button onClick={isRecording ? stopRecording : startRecording}>
+        {isRecording ? 'Stop' : 'Start Recording'}
+      </button>
+      <div className="transcript">{transcript}</div>
+    </div>
+  );
+}
+```
+
+### Node.js - Streaming
+
+```javascript
+const WebSocket = require('ws');
+const fs = require('fs');
+
+const apiKey = '<your_api_key>';
+const wsUrl = `wss://api.education1.uk/v1/stream?api_key=${apiKey}`;
+
+const ws = new WebSocket(wsUrl);
+
+ws.on('open', () => {
+  console.log('Connected to QVox');
+  
+  // Send audio file in chunks
+  const chunkSize = 32000;
+  const audio = fs.readFileSync('audio.wav');
+  
+  let offset = 0;
+  const sendChunk = () => {
+    if (offset >= audio.length) {
+      ws.send(JSON.stringify({ type: 'end' }));
+      return;
+    }
+    
+    const chunk = audio.slice(offset, offset + chunkSize);
+    ws.send(chunk);
+    offset += chunkSize;
+    
+    setTimeout(sendChunk, 100);  // ~100ms between chunks
+  };
+  
+  sendChunk();
+});
+
+ws.on('message', (data) => {
+  const msg = JSON.parse(data.toString());
+  
+  if (msg.type === 'transcript') {
+    console.log('Transcript:', msg.text);
+  } else if (msg.type === 'done') {
+    console.log('Done');
+    ws.close();
+  }
+});
+
+ws.on('error', (err) => {
+  console.error('WebSocket error:', err);
+});
+```
+
+### Python - Streaming
+
+```python
+import asyncio
+import websockets
+import json
+
+async def stream_audio(api_key: str, audio_path: str):
+    uri = f"wss://api.education1.uk/v1/stream?api_key={api_key}"
+    
+    async with websockets.connect(uri) as ws:
+        # Wait for ready
+        await ws.recv()
+        
+        # Send audio chunks
+        with open(audio_path, "rb") as f:
+            while chunk := f.read(32000):
+                await ws.send(chunk)
+                
+                # Receive transcript
+                msg = await ws.recv()
+                data = json.loads(msg)
+                if data.get('type') == 'transcript':
+                    print(f"Transcript: {data['text']}")
+        
+        # End session
+        await ws.send(json.dumps({"type": "end"}))
+        await ws.recv()  # done
+
+asyncio.run(stream_audio("<api_key>", "audio.wav"))
+```
+
+### Python - Microphone Streaming
+
+```python
+import asyncio
+import websockets
+import json
+import pyaudio
+
+async def stream_mic(api_key: str, duration_seconds: int):
+    CHUNK = 32000  # ~2 seconds
+    RATE = 16000
+    
+    uri = f"wss://api.education1.uk/v1/stream?api_key={api_key}"
+    
+    async with websockets.connect(uri) as ws:
+        await ws.recv()  # ready
+        
+        p = pyaudio.PyAudio()
+        stream = p.open(format=pyaudio.paInt16, channels=1, rate=RATE, input=True)
+        
+        for _ in range(int(RATE / CHUNK * duration_seconds)):
+            data = stream.read(CHUNK, exception_on_overflow=False)
+            await ws.send(data)
+            
+            try:
+                msg = await asyncio.wait_for(ws.recv(), timeout=5)
+                data = json.loads(msg)
+                if data.get('type') == 'transcript':
+                    print(data['text'])
+            except asyncio.TimeoutError:
+                pass
+        
+        stream.stop_stream()
+        p.terminate()
+        
+        await ws.send(json.dumps({"type": "end"}))
+        await ws.recv()
+
+asyncio.run(stream_mic("<api_key>", 10))
+```
+
+---
+
+## Batch Transcription (HTTP)
+
+### cURL
+
+```bash
+# File upload
+curl -X POST https://api.education1.uk/v1/transcribe \
+  -H "Authorization: Bearer <api_key>" \
+  -F "model=QVox" \
+  -F "file=@audio.wav"
+
+# With language (Hindi)
+curl -X POST https://api.education1.uk/v1/transcribe \
+  -H "Authorization: Bearer <api_key>" \
+  -F "model=QVox" \
+  -F "file=@audio.wav" \
+  -F "lang=hi"
+```
+
+### Python
 
 ```python
 import requests
 
-# Production: https://api.education1.uk/v1/transcribe
-# Local: http://localhost:8000/v1/transcribe
 url = "https://api.education1.uk/v1/transcribe"
 headers = {"Authorization": "Bearer <api_key>"}
 
@@ -209,118 +417,16 @@ with open("audio.wav", "rb") as f:
     response = requests.post(url, headers=headers, files={"file": f}, data={"model": "QVox"})
 
 print(response.json())
-
-# With language hint (Hindi)
-with open("audio.wav", "rb") as f:
-    response = requests.post(url, headers=headers, files={"file": f}, data={"model": "QVox", "lang": "hi"})
 ```
 
-### Python — Streaming (WAV/PCM only)
-
-```python
-import asyncio
-import websockets
-import json
-
-async def stream_transcribe(audio_path: str, api_key: str):
-    """
-    Real-time streaming transcription.
-    Sends audio in chunks, receives partial transcripts.
-    NOTE: Only WAV and raw PCM formats supported for streaming.
-    Production: wss://api.education1.uk/v1/stream
-    Local: ws://localhost:8000/v1/stream
-    """
-    # Production
-    uri = f"wss://api.education1.uk/v1/stream?api_key={api_key}"
-    # Local development
-    # uri = f"ws://localhost:8000/v1/stream?api_key={api_key}"
-
-    async with websockets.connect(uri, ping_timeout=None) as ws:
-        await ws.recv()  # {"type":"ready"}
-
-        with open(audio_path, "rb") as f:
-            # Read and send in chunks (32KB each = ~2 sec at 16kHz)
-            chunk_size = 32000
-            while chunk := f.read(chunk_size):
-                await ws.send(chunk)
-                # Receive partial transcript for this chunk
-                msg = await ws.recv()
-                data = json.loads(msg)
-                if data.get('type') == 'transcript':
-                    print(f"Partial: {data['text']}")
-
-        # Send end signal and wait for final response
-        await ws.send(json.dumps({"type": "end"}))
-        final = await ws.recv()  # {"type":"done"}
-
-asyncio.run(stream_transcribe("audio.wav", "<api_key>"))
-```
-
-### Python — Real-time Microphone (WAV/PCM)
-
-```python
-import asyncio
-import websockets
-import json
-import pyaudio
-
-async def stream_mic(duration: int, api_key: str):
-    """
-    Real-time microphone streaming.
-    Captures audio in WAV/PCM format and streams to server.
-    Production: wss://api.education1.uk/v1/stream
-    Local: ws://localhost:8000/v1/stream
-    """
-    CHUNK = 32000  # ~2 seconds at 16kHz
-    FORMAT = pyaudio.paInt16  # 16-bit PCM
-    CHANNELS = 1  # mono
-    RATE = 16000   # 16kHz
-
-    # Production
-    uri = f"wss://api.education1.uk/v1/stream?api_key={api_key}"
-    # Local development
-    # uri = f"ws://localhost:8000/v1/stream?api_key={api_key}"
-
-    async with websockets.connect(uri, ping_timeout=None) as ws:
-        await ws.recv()  # ready
-
-        p = pyaudio.PyAudio()
-        stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True)
-
-        for _ in range(int(RATE / CHUNK * duration)):
-            data = stream.read(CHUNK, exception_on_overflow=False)
-            await ws.send(data)
-            # Receive partial transcript
-            try:
-                msg = await asyncio.wait_for(ws.recv(), timeout=10)
-                data = json.loads(msg)
-                if data.get('type') == 'transcript':
-                    print(f"Transcript: {data['text']}")
-            except asyncio.TimeoutError:
-                pass  # No transcript for this chunk yet
-
-        stream.stop_stream()
-        p.terminate()
-
-        await ws.send(json.dumps({"type": "end"}))
-        await ws.recv()  # done
-
-asyncio.run(stream_mic(10, "<api_key>"))
-```
-
-### Node.js — Batch Transcription
+### Node.js
 
 ```javascript
 const FormData = require('form-data');
 const fs = require('fs');
 const axios = require('axios');
 
-const apiKey = '<api_key>';
-// Production: https://api.education1.uk/v1/transcribe
-// Local: http://localhost:8000/v1/transcribe
 const url = 'https://api.education1.uk/v1/transcribe';
-
-// File upload
 const form = new FormData();
 form.append('model', 'QVox');
 form.append('file', fs.createReadStream('audio.wav'));
@@ -333,297 +439,65 @@ const response = await axios.post(url, form, {
 });
 
 console.log(response.data);
-
-// With language hint (Hindi)
-const formHi = new FormData();
-formHi.append('model', 'QVox');
-formHi.append('file', fs.createReadStream('audio.wav'));
-formHi.append('lang', 'hi');
-
-const resHi = await axios.post(url, formHi, {
-    headers: {
-        ...formHi.getHeaders(),
-        'Authorization': `Bearer ${apiKey}`
-    }
-});
 ```
 
-### Node.js — Streaming (WAV/PCM only)
+---
 
-```javascript
-const WebSocket = require('ws');
-const fs = require('fs');
+## Supported Languages
 
-const apiKey = '<api_key>';
-// Production
-const wsUrl = `wss://api.education1.uk/v1/stream?api_key=${apiKey}`;
-// Local development
-// const wsUrl = `ws://localhost:8000/v1/stream?api_key=${apiKey}`;
+For Indic languages, use `lang` parameter:
 
-const ws = new WebSocket(wsUrl);
-
-ws.on('open', () => {
-    // Read audio file and send in chunks (32KB each)
-    const chunkSize = 32000;
-    const audio = fs.readFileSync('audio.wav');
-
-    let offset = 0;
-    while (offset < audio.length) {
-        const chunk = audio.slice(offset, offset + chunkSize);
-        ws.send(chunk);
-        offset += chunkSize;
-    }
-
-    ws.send(JSON.stringify({ type: 'end' }));
-});
-
-ws.on('message', (data) => {
-    const msg = JSON.parse(data.toString());
-
-    if (msg.type === 'transcript') {
-        console.log('Partial:', msg.text);
-    } else if (msg.type === 'done') {
-        ws.close();
-    }
-});
+```
+as, bn, brx, doi, gu, hi, kn, kok, ks, mai, ml, mni, mr, ne, or, pa, sa, sat, sd, ta, te, ur
 ```
 
-### React.js — Browser Streaming (WAV/PCM)
-
-```jsx
-import { useState, useRef, useEffect } from 'react';
-
-function AudioTranscriber() {
-  const [transcript, setTranscript] = useState('');
-  const [isRecording, setIsRecording] = useState(false);
-  const wsRef = useRef(null);
-  const apiKey = '<api_key>';
-
-  // Production: wss://api.education1.uk/v1/stream
-  // Local: ws://localhost:8000/v1/stream
-  const WS_URL = 'wss://api.education1.uk/v1/stream';
-
-  const startRecording = async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const ctx = new AudioContext({ sampleRate: 16000 });
-    const source = ctx.createMediaStreamSource(stream);
-    const processor = ctx.createScriptProcessor(4096, 1, 1);
-
-    processor.onaudioprocess = (e) => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        const monoData = e.inputBuffer.getChannelData(0);
-        const pcm = new Int16Array(monoData.length);
-        for (let i = 0; i < monoData.length; i++) {
-          pcm[i] = Math.max(-1, Math.min(1, monoData[i])) * 0x7FFF;
-        }
-        wsRef.current.send(pcm.buffer);
-      }
-    };
-
-    source.connect(processor);
-    processor.connect(ctx.destination);
-
-    const ws = new WebSocket(`${WS_URL}?api_key=${apiKey}`);
-    ws.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      if (data.type === 'transcript') {
-        setTranscript(prev => prev + ' ' + data.text);
-      }
-    };
-    wsRef.current = ws;
-    setIsRecording(true);
-  };
-
-  const stopRecording = () => {
-    wsRef.current?.send(JSON.stringify({ type: 'end' }));
-    wsRef.current?.close();
-    setIsRecording(false);
-  };
-
-  useEffect(() => {
-    return () => {
-      wsRef.current?.close();
-    };
-  }, []);
-
-  return (
-    <div>
-      <button onClick={startRecording} disabled={isRecording}>Start</button>
-      <button onClick={stopRecording} disabled={!isRecording}>Stop</button>
-      <p>{transcript}</p>
-    </div>
-  );
-}
-```
-
-### Next.js — Streaming with API Route Proxy
-
-For Next.js, best practice hai WebSocket ko API route se proxy karna:
-
-```typescript
-// app/api/transcribe-stream/route.ts
-import { NextRequest } from 'next/server';
-import { useSocket } from '@socket.io/nextjs';
-
-const API_KEY = process.env.QVOX_API_KEY!;
-const WS_URL = process.env.NEXT_PUBLIC_QVOX_WS_URL || 'wss://api.education1.uk/v1/stream';
-
-export async function POST(req: NextRequest) {
-  const formData = await req.formData();
-  const audioFile = formData.get('file') as File;
-
-  if (!audioFile) {
-    return Response.json({ error: 'No audio file' }, { status: 400 });
-  }
-
-  // For streaming, connect directly from client to WSS endpoint
-  // This API route is for batch transcription proxy
-  const response = await fetch('https://api.education1.uk/v1/transcribe', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${API_KEY}`
-    },
-    body: formData
-  });
-
-  return Response.json(await response.json());
-}
-```
-
-```typescript
-// app/components/StreamTranscriber.tsx
-'use client';
-
-import { useState, useRef } from 'react';
-
-export function StreamTranscriber() {
-  const [transcript, setTranscript] = useState('');
-  const wsRef = useRef<WebSocket | null>(null);
-
-  // Production: wss://api.education1.uk/v1/stream
-  // Local: ws://localhost:8000/v1/stream
-  const WS_URL = process.env.NEXT_PUBLIC_QVOX_WS_URL || 'wss://api.education1.uk/v1/stream';
-
-  const connect = (apiKey: string) => {
-    const ws = new WebSocket(`${WS_URL}?api_key=${apiKey}`);
-    ws.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      if (data.type === 'transcript') {
-        setTranscript(prev => prev + ' ' + data.text);
-      }
-    };
-    wsRef.current = ws;
-  };
-
-  return <div>{/* UI components */}</div>;
-}
-```
-
-```bash
-# .env.local
-NEXT_PUBLIC_QVOX_WS_URL=wss://api.education1.uk/v1/stream
-QVOX_API_KEY=your_api_key_here
-```
-
-### cURL — Batch Only
-
-```bash
-# Batch file upload
-curl -X POST http://localhost:8000/v1/transcribe \
-  -H "Authorization: Bearer <api_key>" \
-  -F "model=QVox" \
-  -F "file=@audio.wav"
-
-# Batch with URL
-curl -X POST http://localhost:8000/v1/transcribe \
-  -H "Authorization: Bearer <api_key>" \
-  -F "model=QVox" \
-  -F "url=https://example.com/audio.mp3"
-
-# Batch with language (Hindi)
-curl -X POST http://localhost:8000/v1/transcribe \
-  -H "Authorization: Bearer <api_key>" \
-  -F "model=QVox" \
-  -F "file=@audio.wav" \
-  -F "lang=hi"
-```
-
-> **Note:** Streaming via cURL is not practical since you need to send binary audio chunks in real-time.
+**Without `lang`**: English ASR + Speaker Diarization (returns speaker labels)
+**With `lang`**: Indic ASR only (no diarization)
 
 ---
 
 ## Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `RT_ASR_URL` | Canary batch ASR URL | `http://localhost:9005/transcribe` |
-| `RT_ASR_WS_URL` | Canary WebSocket streaming URL | `ws://localhost:9005/ws` |
-| `INDIC_ASR_URL` | Indic languages ASR URL | `http://localhost:9002/realtime` |
-| `DIARIZATION_URL` | Speaker diarization URL | `http://localhost:9003/diarize` |
-| `API_KEYS` | Comma-separated API keys | - |
-| `MODEL_NAME` | Valid model name (must be "QVox") | `QVox` |
+| Variable | Description |
+|----------|-------------|
+| `API_KEYS` | Comma-separated API keys |
+| `RT_ASR_URL` | Canary ASR endpoint (internal) |
+| `INDIC_ASR_URL` | Indic ASR endpoint (internal) |
+| `DIARIZATION_URL` | Diarization endpoint (internal) |
 
 ---
 
-## Architecture
+## Troubleshooting
+
+### Connection Issues
+
+**"WebSocket connection failed"**
+- Check if API key is valid
+- Verify network allows WebSocket connections
+- For local dev, ensure QVox server is running on port 8000
+
+**"Invalid or missing API key"**
+- API key not provided in query param
+- API key not in allowed keys list
+
+### Audio Issues
+
+**No transcript returned**
+- Ensure audio is 16kHz, 16-bit, mono
+- Check microphone permissions in browser
+- Verify audio chunks are being sent (check browser console logs)
+
+**Poor transcription quality**
+- Use larger chunks (48KB instead of 32KB)
+- Ensure clean audio input
+- Check for background noise
+
+### Protocol Flow
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         CLIENT                                    │
-│   (Browser App / Mobile / IoT Device)                            │
-└─────────────────────────┬───────────────────────────────────────┘
-                          │  HTTPS/WSS
-                          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   QVox API Gateway (:8000)                       │
-│                                                                  │
-│  ┌──────────────┐    ┌─────────────────┐    ┌──────────────┐   │
-│  │  /v1/stream │    │ /v1/transcribe   │    │  / (health) │   │
-│  │  (WebSocket) │    │  (HTTP POST)     │    │              │   │
-│  └──────┬───────┘    └────────┬────────┘    └──────────────┘   │
-│         │                      │                                   │
-│  ┌──────▼──────────────────────▼──────────────────────────────┐   │
-│  │              Security Layer (API Key Validation)            │   │
-│  └──────────────────────┬───────────────────────────────────┘   │
-│                         │                                        │
-│  ┌──────────────────────▼───────────────────────────────────┐   │
-│  │              Routing / Service Layer                      │   │
-│  │  - StreamingSession (WebSocket proxy)                     │   │
-│  │  - run_pipeline() (batch ASR + Diarization)              │   │
-│  │  - download_from_url() (YouTube/URL)                      │   │
-│  └──────────────────────┬───────────────────────────────────┘   │
-└─────────────────────────┼───────────────────────────────────────┘
-                          │
-          ┌───────────────┼───────────────┐
-          │               │               │
-          ▼               ▼               ▼
-    ┌──────────┐   ┌──────────┐   ┌──────────────┐
-    │ Canary   │   │  Indic   │   │ Diarization  │
-    │ /ws/:9005│   │ ASR/:9002│   │  /:9003      │
-    │ /transcrb│   │          │   │              │
-    └──────────┘   └──────────┘   └──────────────┘
+1. Client connects WS → Server sends {"type": "ready"}
+2. Client sends audio bytes → Server processes → sends {"type": "transcript", "text": "..."}
+3. Client sends {"type": "end"} → Server sends {"type": "done"}
 ```
 
----
-
-## Docker Deployment
-
-```bash
-# Build
-docker compose build
-
-# Run
-docker compose up -d
-
-# Logs
-docker compose logs -f
-
-# Shell into container
-docker compose exec qvox sh
-```
-
-**Health check:**
-```bash
-curl http://localhost:8000/
-# Response: {"Status":"QVox--Running....."}
-```
+Make sure your client handles all message types: `ready`, `transcript`, `done`, `error`.
