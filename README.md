@@ -7,7 +7,6 @@ This guide focuses on **client-side integration** with QVox API. For server deta
 | Environment | Base URL | WebSocket |
 |-------------|----------|-----------|
 | **Production** | `https://api.education1.uk` | `wss://api.education1.uk/v1/stream` |
-| **Local** | `http://localhost:8000` | `ws://localhost:8000/v1/stream` |
 
 ---
 
@@ -445,25 +444,14 @@ console.log(response.data);
 
 ## Supported Languages
 
-For Indic languages, use `lang` parameter:
+For languages, use `lang` parameter:
 
 ```
 as, bn, brx, doi, gu, hi, kn, kok, ks, mai, ml, mni, mr, ne, or, pa, sa, sat, sd, ta, te, ur
 ```
 
 **Without `lang`**: English ASR + Speaker Diarization (returns speaker labels)
-**With `lang`**: Indic ASR only (no diarization)
-
----
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `API_KEYS` | Comma-separated API keys |
-| `RT_ASR_URL` | Canary ASR endpoint (internal) |
-| `INDIC_ASR_URL` | Indic ASR endpoint (internal) |
-| `DIARIZATION_URL` | Diarization endpoint (internal) |
+**With `lang`**: ASR only (no diarization)
 
 ---
 
